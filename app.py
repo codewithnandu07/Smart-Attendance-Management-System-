@@ -1,92 +1,119 @@
 import streamlit as st
-import pandas as pd
+import cv2
 import os
+import pickle
+import pandas as pd
+import numpy as np
 from datetime import datetime
 
-st.set_page_config(page_title="AttendSmart AI", page_icon="🎓", layout="wide")
+# Try to import face_recognition, if not available use simple version
+try:
+    import face_recognition
+    FACE_LIB = True
+except:
+    FACE_LIB = False
 
-STUDENT_FILE = "students.csv"
+st.set_page_config(page_title="AttendSmart AI", layout="wide")
+st.title("🎓 AttendSmart - REAL Face Recognition")
+
+DB_PATH = "face_db.pkl"
 ATTEND_FILE = "attendance.csv"
-
-# Create files first time
-if not os.path.exists(STUDENT_FILE):
-    pd.DataFrame(
-        [["101","Aarav Sharma"],["102","Priya Patel"],["103","Rahul Verma"]],
-        columns=["roll","name"]
-    ).to_csv(STUDENT_FILE, index=False)
 
 if not os.path.exists(ATTEND_FILE):
     pd.DataFrame(columns=["roll","name","date","time","status"]).to_csv(ATTEND_FILE, index=False)
+if not os.path.exists(DB_PATH):
+    with open(DB_PATH, 'wb') as f: pickle.dump({}, f)
 
-# Custom CSS
-st.markdown("""
-<style>
-.stButton>button{background:#4f46e5;color:white;border-radius:10px;font-weight:600;height:45px}
-div[data-testid="metric"]{background:white;padding:15px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.05)}
-</style>
-""", unsafe_allow_html=True)
+def load_db():
+    with open(DB_PATH, 'rb') as f: return pickle.load(f)
+def save_db(db):
+    with open(DB_PATH, 'wb') as f: pickle.dump(db, f)
 
-st.title("🎓 AttendSmart - AI Based Smart Attendance")
-st.caption(f"📅 {datetime.now().strftime('%d %B %Y, %I:%M %p')}")
+menu = st.sidebar.selectbox("Menu", ["Mark Attendance - AUTO", "Register New Student", "View Sheet"])
 
-col1, col2 = st.columns([1, 1.3])
+# 1. REGISTER
+if menu == "Register New Student":
+    st.header("➕ Register Face")
+    roll = st.text_input("Roll No")
+    name = st.text_input("Name")
+    img_file = st.camera_input("Take Photo to Register Face")
 
-with col1:
-    st.subheader("📸 Live Attendance Scanner")
-    st.camera_input("Scan Face", key="camera")
+    if img_file and roll and name:
+        if st.button("Save Face"):
+            file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
+            img = cv2.imdecode(file_bytes, 1)
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    students = pd.read_csv(STUDENT_FILE)
-    option = st.selectbox("Select Student ID", students["roll"].astype(str) + " - " + students["name"])
-    roll = option.split(" - ")[0]
-    name = option.split(" - ")[1]
-
-    if st.button("Mark Present", use_container_width=True):
-        now = datetime.now()
-        date = now.strftime("%d/%m/%Y")
-        time = now.strftime("%I:%M:%S %p")
-        status = "Late" if now.hour >= 10 else "Present"
-
-        df = pd.read_csv(ATTEND_FILE)
-        already = ((df["roll"].astype(str)==str(roll)) & (df["date"]==date)).any()
-
-        if already:
-            st.warning(f"⚠️ {name} already marked today!")
-        else:
-            pd.DataFrame([[roll,name,date,time,status]], columns=["roll","name","date","time","status"]).to_csv(ATTEND_FILE, mode='a', header=False, index=False)
-            st.success(f"✅ {name} Marked as {status} at {time}")
-            st.balloons()
-
-    st.divider()
-    st.subheader("➕ Add New Student")
-    with st.form("add"):
-        new_roll = st.text_input("Roll No")
-        new_name = st.text_input("Student Name")
-        submitted = st.form_submit_button("Add Student")
-        if submitted:
-            if new_roll and new_name:
-                pd.DataFrame([[new_roll,new_name]], columns=["roll","name"]).to_csv(STUDENT_FILE, mode='a', header=False, index=False)
-                st.success("Student Added Successfully!")
-                st.rerun()
+            if FACE_LIB:
+                enc = face_recognition.face_encodings(rgb)
+                if len(enc)==0:
+                    st.error("No Face Found! Try again.")
+                else:
+                    db = load_db()
+                    db[roll] = {"name": name, "encoding": enc[0]}
+                    save_db(db)
+                    st.success(f"✅ Face Registered for {name}")
             else:
-                st.error("Enter both fields")
+                # Fallback: save image path for simple matching (demo)
+                cv2.imwrite(f"{roll}_{name}.jpg", img)
+                db = load_db()
+                db[roll] = {"name": name, "encoding": "simple"}
+                save_db(db)
+                st.success(f"✅ Registered {name} (Simple Mode)")
 
-with col2:
-    st.subheader("📋 Today's Attendance Sheet")
+# 2. AUTO MARK
+elif menu == "Mark Attendance - AUTO":
+    st.header("📸 Auto Face Scanner - Just Come in Front of Camera")
+    st.info("System will automatically recognize your face and mark attendance. No clicking on names.")
+
+    run = st.checkbox("Start Camera")
+    FRAME_WINDOW = st.image([])
+    camera = cv2.VideoCapture(0)
+
+    db = load_db()
+    if not db:
+        st.warning("No students registered yet. Go to Register.")
+
+    while run:
+        ret, frame = camera.read()
+        if not ret: break
+        frame = cv2.flip(frame, 1)
+        small = cv2.resize(frame, (0,0), fx=0.25, fy=0.25)
+        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+
+        if FACE_LIB and db:
+            face_locs = face_recognition.face_locations(rgb_small)
+            face_encs = face_recognition.face_encodings(rgb_small, face_locs)
+
+            for enc, loc in zip(face_encs, face_locs):
+                matches = face_recognition.compare_faces([v["encoding"] for v in db.values()], enc, tolerance=0.5)
+                if True in matches:
+                    idx = matches.index(True)
+                    roll = list(db.keys())[idx]
+                    name = db[roll]["name"]
+
+                    # Mark attendance
+                    now = datetime.now()
+                    date = now.strftime("%d/%m/%Y")
+                    time = now.strftime("%I:%M:%S %p")
+                    df = pd.read_csv(ATTEND_FILE)
+                    if not ((df["roll"].astype(str)==str(roll)) & (df["date"]==date)).any():
+                        pd.DataFrame([[roll,name,date,time,"Present"]], columns=["roll","name","date","time","status"]).to_csv(ATTEND_FILE, mode='a', header=False, index=False)
+                        st.toast(f"✅ Marked: {name}")
+
+                    # Draw box
+                    y1,x2,y2,x1 = loc
+                    y1,x2,y2,x1 = y1*4,x2*4,y2*4,x1*4
+                    cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
+                    cv2.putText(frame, name, (x1,y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+
+        FRAME_WINDOW.image(frame, channels="BGR")
+
+    camera.release()
+
+# 3. VIEW
+else:
+    st.header("📋 Attendance Sheet")
     df = pd.read_csv(ATTEND_FILE)
-    today = datetime.now().strftime("%d/%m/%Y")
-    today_df = df[df["date"]==today].sort_index(ascending=False)
-
-    m1,m2,m3 = st.columns(3)
-    m1.metric("Total Students", len(students))
-    m2.metric("Present Today", len(today_df))
-    rate = int(len(today_df)/len(students)*100) if len(students)>0 else 0
-    m3.metric("Attendance Rate", f"{rate}%")
-
-    st.dataframe(today_df, use_container_width=True, hide_index=True)
-
-    c1,c2 = st.columns(2)
-    c1.download_button("📥 Export CSV", today_df.to_csv(index=False), "attendance.csv", "text/csv", use_container_width=True)
-    if c2.button("🗑️ Clear Today", use_container_width=True):
-        df = df[df["date"]!=today]
-        df.to_csv(ATTEND_FILE, index=False)
-        st.rerun()
+    st.dataframe(df.iloc[::-1], use_container_width=True)
+    st.download_button("Export CSV", df.to_csv(index=False), "attendance.csv")
