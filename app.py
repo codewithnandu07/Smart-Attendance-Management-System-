@@ -1,76 +1,71 @@
-
 import streamlit as st
-import pandas as pd, os, pickle, cv2, numpy as np
+import pandas as pd
+import os
 from datetime import datetime
-import face_recognition
 
-st.set_page_config(page_title="AttendSmart AI", layout="wide")
-st.title("🎓 AttendSmart - Auto Face Attendance")
+st.set_page_config(page_title="AttendSmart", page_icon="🎓", layout="wide")
 
-DB="face_db.pkl"
-FILE="attendance.csv"
-if not os.path.exists(FILE): pd.DataFrame(columns=["roll","name","date","time"]).to_csv(FILE,index=False)
-if not os.path.exists(DB):
-    with open(DB,'wb') as f: pickle.dump({},f)
+FILE = "attendance.csv"
+STUDENT_FILE = "students.csv"
 
-def load_db():
-    with open(DB,'rb') as f: return pickle.load(f)
-def save_db(d):
-    with open(DB,'wb') as f: pickle.dump(d,f)
+if not os.path.exists(STUDENT_FILE):
+    pd.DataFrame([["101","Aarav Sharma"],["102","Priya Patel"],["103","Rahul Verma"]], columns=["roll","name"]).to_csv(STUDENT_FILE, index=False)
+if not os.path.exists(FILE):
+    pd.DataFrame(columns=["roll","name","date","time","status"]).to_csv(FILE, index=False)
 
-tab1, tab2, tab3 = st.tabs(["✅ AUTO ATTENDANCE","➕ REGISTER","📋 SHEET"])
+st.title("🎓 AttendSmart - Smart Attendance System")
+st.caption(datetime.now().strftime("%d %B %Y | %I:%M %p"))
 
-with tab2:
-    st.subheader("Register Face Once")
-    roll=st.text_input("Roll No", key="r")
-    name=st.text_input("Name", key="n")
-    pic=st.camera_input("Take Photo")
-    if pic and roll and name and st.button("Save Face"):
-        bytes_data = pic.getvalue()
-        img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        enc = face_recognition.face_encodings(rgb)
-        if not enc:
-            st.error("No face detected, try again")
-        else:
-            db=load_db(); db[roll]={"name":name,"enc":enc[0]}; save_db(db)
-            st.success(f"Saved {name} - Now go to AUTO tab, it will recognize you automatically")
+c1, c2 = st.columns([1, 1.4])
 
-with tab1:
-    st.subheader("Just Show Your Face - No Typing")
-    st.info("Take a photo - system will auto-detect who you are and mark attendance")
-    snap = st.camera_input("Scan Face for Attendance", key="scan")
+with c1:
+    st.subheader("📸 Mark Attendance")
+    # Camera works fast without face lib
+    st.camera_input("Live Camera")
 
-    if snap:
-        bytes_data = snap.getvalue()
-        img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        encs = face_recognition.face_encodings(rgb)
+    students = pd.read_csv(STUDENT_FILE)
+    choice = st.selectbox("Select Student", students["roll"].astype(str) + " - " + students["name"])
+    roll = choice.split(" - ")[0]
+    name = choice.split(" - ")[1]
 
-        if not encs:
-            st.error("No face found")
-        else:
-            db=load_db()
-            if not db: st.warning("No students registered yet")
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("✅ Present", use_container_width=True):
+            now = datetime.now()
+            date, time = now.strftime("%d/%m/%Y"), now.strftime("%I:%M %p")
+            df = pd.read_csv(FILE)
+            if ((df["roll"].astype(str)==roll) & (df["date"]==date)).any():
+                st.warning(f"{name} already marked!")
             else:
-                known_encs = [v["enc"] for v in db.values()]
-                results = face_recognition.compare_faces(known_encs, encs[0], 0.5)
-                if True in results:
-                    idx=results.index(True)
-                    roll=list(db.keys())[idx]
-                    name=db[roll]["name"]
-                    now=datetime.now()
-                    date=now.strftime("%d/%m/%Y"); time=now.strftime("%I:%M %p")
-                    df=pd.read_csv(FILE)
-                    if ((df["roll"].astype(str)==str(roll)) & (df["date"]==date)).any():
-                        st.warning(f"⚠️ {name} already marked today")
-                    else:
-                        pd.DataFrame([[roll,name,date,time]], columns=["roll","name","date","time"]).to_csv(FILE,mode='a',header=False,index=False)
-                        st.success(f"✅ Auto Marked: {name} ({roll}) at {time}"); st.balloons()
-                else:
-                    st.error("Face not recognized - Please register first")
+                pd.DataFrame([[roll,name,date,time,"Present"]], columns=["roll","name","date","time","status"]).to_csv(FILE, mode='a', header=False, index=False)
+                st.success(f"Marked: {name}"); st.balloons()
 
-with tab3:
-    df=pd.read_csv(FILE)
-    st.dataframe(df.iloc[::-1], use_container_width=True)
-    st.download_button("Export CSV", df.to_csv(index=False), "attendance.csv")
+    st.divider()
+    st.subheader("➕ Add Student")
+    with st.form("add", clear_on_submit=True):
+        r = st.text_input("Roll No")
+        n = st.text_input("Name")
+        if st.form_submit_button("Add"):
+            if r and n:
+                pd.DataFrame([[r,n]], columns=["roll","name"]).to_csv(STUDENT_FILE, mode='a', header=False, index=False)
+                st.success("Added!"); st.rerun()
+
+with c2:
+    st.subheader("📋 Today's Attendance")
+    df = pd.read_csv(FILE)
+    today = datetime.now().strftime("%d/%m/%Y")
+    today_df = df[df["date"]==today].iloc[::-1]
+
+    m1,m2,m3 = st.columns(3)
+    m1.metric("Total Students", len(students))
+    m2.metric("Present Today", len(today_df))
+    rate = int(len(today_df)/len(students)*100) if len(students) else 0
+    m3.metric("Rate", f"{rate}%")
+
+    st.dataframe(today_df, use_container_width=True, hide_index=True)
+
+    st.download_button("📥 Download CSV", df.to_csv(index=False), "attendance.csv", "text/csv", use_container_width=True)
+    if st.button("🗑️ Clear Today Data"):
+        df = df[df["date"]!=today]
+        df.to_csv(FILE, index=False)
+        st.rerun()
